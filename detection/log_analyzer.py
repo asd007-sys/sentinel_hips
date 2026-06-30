@@ -1,131 +1,151 @@
 """
 Modulo iv - Analisis de Logs - sentinel_hips
 ---------------------------------------------
-Analiza dos tipos de log buscando patrones de ataque:
+Vigila en loop continuo los logs del sistema buscando 3 patrones de ataque:
 
-  1. Scanner HTTP (/var/log/httpd/access.log):
-     Una IP que genera muchos errores 404 esta escaneando el servidor
-     buscando rutas vulnerables. Si supera scanner_404_threshold -> alarma + ban IP.
+  1. Failed Password / authentication failure en /var/log/secure y
+     /var/log/messages. (Solo alarma por defecto; la prevencion de
+     fuerza bruta la maneja el modulo x con su ventana de tiempo.)
 
-  2. Correo masivo (/var/log/maillog):
-     Una cuenta que envia muchos mails (from=) esta haciendo spam,
-     probablemente porque fue comprometida. Si supera mail_threshold ->
-     alarma + bloquear cuenta.
+  2. Scanner HTTP: muchos errores 404 desde una misma IP en
+     /var/log/httpd/access.log -> alarma + banear IP.
 
-Este modulo analiza los archivos completos (modo analisis), igual que
-el de DDoS. Se le puede pasar la ruta de cada log por argumento.
+  3. Correo masivo: una cuenta que envia muchos mails (from=) en
+     /var/log/maillog -> alarma + bajar el servicio de correo.
 
-USO:
-  sudo venv/bin/python detection/log_analyzer.py <access_log> <maillog>
+Lee los logs de forma incremental (solo lineas nuevas) y cuenta por
+ventana de tiempo, igual que el modulo x. Corre en loop.
+
+Las cuentas/IPs en lista blanca nunca se bloquean.
 """
 
 import re
+import time
 import sys
 import os
+from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from alerts.logger import registrar_alarma, registrar_prevencion
 from alerts.mailer import enviar_email
-from prevention.log_prevention import banear_ip, bloquear_cuenta
+from prevention.log_prevention import banear_ip, bajar_correo
 from config_loader import obtener_parametro
 
-# Rutas por defecto (se pueden pasar otras por argumento)
+# Logs que vigila el modulo
+RUTA_SECURE = "/var/log/secure"
+RUTA_MESSAGES = "/var/log/messages"
 RUTA_ACCESS = "/var/log/httpd/access.log"
 RUTA_MAILLOG = "/var/log/maillog"
 
 
-def analizar_scanner(ruta, umbral):
-    """
-    Cuenta errores 404 por IP en el access.log.
-    Por cada IP que supere el umbral, alarma y banea.
-    """
+def abrir_al_final(ruta):
+    """Abre un log y se posiciona al final (para leer solo lo nuevo).
+    Devuelve el archivo abierto, o None si no existe."""
     if not os.path.isfile(ruta):
-        print("No existe el access.log:", ruta)
-        return
-
-    # Contar 404 por IP
-    contador = {}
-    with open(ruta, "r") as f:
-        for linea in f:
-            # Formato: IP - - [fecha] "GET ..." 404 ...
-            if " 404 " not in linea:
-                continue
-            ip = linea.split()[0]
-            contador[ip] = contador.get(ip, 0) + 1
-
-    # Revisar cuales superan el umbral
-    for ip, cantidad in contador.items():
-        if cantidad >= umbral:
-            print("[!] SCANNER_HTTP ->", ip, "(" + str(cantidad), "errores 404)")
-            alarma_id = registrar_alarma("SCANNER_HTTP", "logs", ip)
-            resultado = banear_ip(ip)
-            registrar_prevencion(alarma_id, "banear IP " + ip, resultado)
-            enviar_email(
-                "[HIPS ALERTA] Scanner HTTP desde " + ip,
-                "La IP " + ip + " genero " + str(cantidad) + " errores 404 "
-                "(escaneo de rutas). Accion tomada: IP baneada (" + resultado + ").",
-            )
-
-
-def analizar_correo(ruta, umbral):
-    """
-    Cuenta mails enviados (from=) por cuenta en el maillog.
-    Por cada cuenta que supere el umbral, alarma y bloquea.
-    """
-    if not os.path.isfile(ruta):
-        print("No existe el maillog:", ruta)
-        return
-
-    # Contar envios por cuenta
-    contador = {}
-    with open(ruta, "r") as f:
-        for linea in f:
-            # Buscar el patron from=<cuenta>
-            m = re.search(r"from=<([^>]+)>", linea)
-            if not m:
-                continue
-            cuenta = m.group(1)
-            contador[cuenta] = contador.get(cuenta, 0) + 1
-
-    # Revisar cuales superan el umbral
-    for cuenta, cantidad in contador.items():
-        if cantidad >= umbral:
-            print("[!] MAIL_QUEUE_ALTA ->", cuenta, "(" + str(cantidad), "envios)")
-            alarma_id = registrar_alarma("MAIL_QUEUE_ALTA", "logs", None)
-            # El usuario del sistema es la parte antes del @
-            usuario = cuenta.split("@")[0]
-            resultado = bloquear_cuenta(usuario)
-            registrar_prevencion(alarma_id, "bloquear cuenta " + usuario, resultado)
-            enviar_email(
-                "[HIPS ALERTA] Correo masivo desde " + cuenta,
-                "La cuenta " + cuenta + " envio " + str(cantidad) + " mails "
-                "(posible spam / cuenta comprometida). Accion tomada: cuenta "
-                "bloqueada (" + resultado + ").",
-            )
+        return None
+    f = open(ruta, "r")
+    f.seek(0, os.SEEK_END)
+    return f
 
 
 def main():
-    # Rutas por argumento o por defecto
-    ruta_access = sys.argv[1] if len(sys.argv) > 1 else RUTA_ACCESS
-    ruta_maillog = sys.argv[2] if len(sys.argv) > 2 else RUTA_MAILLOG
-
     umbral_scanner = int(obtener_parametro("logs", "scanner_404_threshold", "20"))
     umbral_mail = int(obtener_parametro("logs", "mail_threshold", "15"))
+    ventana_min = int(obtener_parametro("logs", "ventana_minutos", "10"))
+    intervalo = int(obtener_parametro("logs", "check_interval", "10"))
+    protegidas = obtener_parametro("logs", "cuentas_protegidas", "asd,root,hips,postfix")
+    cuentas_protegidas = protegidas.split(",")
+    ventana = timedelta(minutes=ventana_min)
+
+    # Abrir los logs disponibles, posicionados al final
+    archivos = {
+        "secure": abrir_al_final(RUTA_SECURE),
+        "messages": abrir_al_final(RUTA_MESSAGES),
+        "access": abrir_al_final(RUTA_ACCESS),
+        "maillog": abrir_al_final(RUTA_MAILLOG),
+    }
+
+    # Contadores por ventana de tiempo
+    fallos_login = {}   # ip -> lista de horas
+    scanner_404 = {}    # ip -> lista de horas
+    correo = {}         # cuenta -> lista de horas
+    ya_alarmadas = []
 
     print("Modulo iv (analisis de logs) iniciado.")
-    print("Umbral scanner:", umbral_scanner, "errores 404 |",
-          "Umbral correo:", umbral_mail, "mails.")
-    print("")
+    print("Vigilando: secure, messages, access.log, maillog.")
+    print("Ctrl+C para detener.")
 
-    print("--- Analizando access.log ---")
-    analizar_scanner(ruta_access, umbral_scanner)
+    while True:
+        ahora = datetime.now()
 
-    print("--- Analizando maillog ---")
-    analizar_correo(ruta_maillog, umbral_mail)
+        # --- Frente 1: Failed Password en secure y messages ---
+        for clave in ["secure", "messages"]:
+            f = archivos[clave]
+            if f is None:
+                continue
+            for linea in f.readlines():
+                if "Failed password" in linea or "authentication failure" in linea:
+                    m = re.search(r"from (\d+\.\d+\.\d+\.\d+)", linea)
+                    ip = m.group(1) if m else "N/A"
+                    fallos_login.setdefault(ip, []).append(ahora)
+                    fallos_login[ip] = [t for t in fallos_login[ip] if t >= ahora - ventana]
+                    # Solo alarma (la prevencion la maneja el modulo x)
+                    nombre = "FAILED_LOGIN_MULTIPLE"
+                    if len(fallos_login[ip]) >= 5 and (nombre + ip) not in ya_alarmadas:
+                        ya_alarmadas.append(nombre + ip)
+                        print("[!] FAILED_LOGIN_MULTIPLE ->", ip)
+                        ip_db = ip if ip != "N/A" else None
+                        registrar_alarma("FAILED_LOGIN_MULTIPLE", "logs", ip_db)
 
-    print("")
-    print("Analisis terminado.")
+        # --- Frente 2: Scanner HTTP en access.log ---
+        f = archivos["access"]
+        if f is not None:
+            for linea in f.readlines():
+                if " 404 " not in linea:
+                    continue
+                ip = linea.split()[0]
+                scanner_404.setdefault(ip, []).append(ahora)
+                scanner_404[ip] = [t for t in scanner_404[ip] if t >= ahora - ventana]
+                if len(scanner_404[ip]) >= umbral_scanner and ("scan" + ip) not in ya_alarmadas:
+                    ya_alarmadas.append("scan" + ip)
+                    print("[!] SCANNER_HTTP ->", ip, "(" + str(len(scanner_404[ip])), "404)")
+                    alarma_id = registrar_alarma("SCANNER_HTTP", "logs", ip)
+                    resultado = banear_ip(ip)
+                    registrar_prevencion(alarma_id, "banear IP " + ip, resultado)
+                    enviar_email(
+                        "[HIPS ALERTA] Scanner HTTP desde " + ip,
+                        "La IP " + ip + " genero muchos errores 404 (escaneo). "
+                        "Accion: IP baneada (" + resultado + ").",
+                    )
+
+        # --- Frente 3: Correo masivo en maillog ---
+        f = archivos["maillog"]
+        if f is not None:
+            for linea in f.readlines():
+                m = re.search(r"from=<([^>]+)>", linea)
+                if not m:
+                    continue
+                cuenta = m.group(1)
+                correo.setdefault(cuenta, []).append(ahora)
+                correo[cuenta] = [t for t in correo[cuenta] if t >= ahora - ventana]
+                if len(correo[cuenta]) >= umbral_mail and ("mail" + cuenta) not in ya_alarmadas:
+                    usuario = cuenta.split("@")[0]
+                    if usuario in cuentas_protegidas:
+                        continue
+                    ya_alarmadas.append("mail" + cuenta)
+                    print("[!] MAIL_QUEUE_ALTA ->", cuenta)
+                    alarma_id = registrar_alarma("MAIL_QUEUE_ALTA", "logs", None)
+                    # Prevencion del enunciado: bajar el servicio de correo
+                    resultado = bajar_correo()
+                    registrar_prevencion(alarma_id, "bajar servicio de correo", resultado)
+                    enviar_email(
+                        "[HIPS ALERTA] Correo masivo desde " + cuenta,
+                        "La cuenta " + cuenta + " envio muchos mails (spam). "
+                        "Accion: servicio de correo detenido (" + resultado + ").",
+                    )
+
+        time.sleep(intervalo)
 
 
 if __name__ == "__main__":
