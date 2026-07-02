@@ -7,7 +7,8 @@ Maneja dos tipos de fallo de autenticacion:
   1. Con IP (ej. SSH): "Failed password for root from 10.0.0.8"
      -> cuenta por IP, prevencion = banear IP.
   2. Sin IP, con usuario (ej. SMTP): "authentication failure; ... user=condorito"
-     -> cuenta por usuario, prevencion = bloquear cuenta.
+     -> cuenta por usuario, prevencion = cambiar la contrasena por una aleatoria
+        (es lo que pide el enunciado para usuarios atacados).
 
 Si una IP o un usuario supera max_failed_attempts dentro de
 time_window_minutes, se genera la alarma y se aplica la prevencion.
@@ -23,7 +24,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from alerts.logger import registrar_alarma, registrar_prevencion
 from alerts.mailer import enviar_email
-from prevention.access_prevention import banear_ip, bloquear_cuenta
+from prevention.access_prevention import banear_ip, cambiar_password
 from config_loader import obtener_parametro
 
 RUTA_LOG = "/var/log/secure"
@@ -69,10 +70,12 @@ def main():
     ventana_min = int(obtener_parametro("accesos", "time_window_minutes", "10"))
     whitelist = obtener_parametro("accesos", "ip_whitelist", "127.0.0.1")
     lista_blanca = whitelist.split(",")
+    # Usuarios protegidos: nunca se les cambia la contrasena (admin, root, etc.)
+    protegidos = obtener_parametro("accesos", "usuarios_protegidos", "asd,root,hips")
+    usuarios_protegidos = protegidos.split(",")
 
     # Por cada clave (ip o usuario) guardamos la lista de fechas de sus fallos
     intentos = {}
-    # Claves que ya alarmamos, para no repetir
     ya_alarmadas = []
 
     print("Modulo x (accesos invalidos) iniciado.")
@@ -124,8 +127,13 @@ def main():
                     resultado = banear_ip(ip)
                     accion = "banear IP " + ip
             else:
-                resultado = bloquear_cuenta(usuario)
-                accion = "bloquear cuenta " + usuario
+                # Ataque por usuario: cambiar su contrasena por una aleatoria
+                if usuario in usuarios_protegidos:
+                    accion = "usuario " + usuario + " protegido, no se cambia password"
+                    resultado = "exito"
+                else:
+                    resultado = cambiar_password(usuario)
+                    accion = "cambiar password aleatoria de " + usuario
 
             registrar_prevencion(alarma_id, accion, resultado)
 
