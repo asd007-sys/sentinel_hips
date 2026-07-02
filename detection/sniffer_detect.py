@@ -8,6 +8,9 @@ Detecta dos cosas:
 Cuando detecta algo: registra la alarma, aplica la prevencion
 (apagar promiscuo o matar el proceso), y manda email al admin.
 Corre en loop cada sniffer_check_interval segundos.
+
+NOTA: el propio HIPS lanza un tcpdump para el modulo viii (captura de
+DNS). Ese tcpdump legitimo se ignora, para no matar la captura del HIPS.
 """
 
 import subprocess
@@ -36,13 +39,31 @@ def buscar_promiscuo():
     return interfaces
 
 
+def es_tcpdump_del_hips(pid):
+    """
+    Devuelve True si el proceso es el tcpdump que lanza el propio HIPS
+    para el modulo viii (el que captura 'port 53'). Ese no hay que matarlo.
+    """
+    try:
+        with open("/proc/" + pid + "/cmdline", "r") as f:
+            cmdline = f.read()
+        # El tcpdump del HIPS usa 'port 53'
+        return "port" in cmdline and "53" in cmdline
+    except OSError:
+        return False
+
+
 def buscar_herramientas():
-    """Devuelve una lista de (herramienta, pid) de las que esten corriendo."""
+    """Devuelve una lista de (herramienta, pid) de las que esten corriendo,
+    ignorando el tcpdump legitimo del HIPS."""
     encontradas = []
     for herramienta in HERRAMIENTAS_CAPTURA:
         resultado = subprocess.run(["pgrep", herramienta], capture_output=True, text=True)
         if resultado.stdout.strip():
             for pid in resultado.stdout.strip().splitlines():
+                # Saltar el tcpdump del propio HIPS
+                if herramienta == "tcpdump" and es_tcpdump_del_hips(pid):
+                    continue
                 encontradas.append((herramienta, pid))
     return encontradas
 
