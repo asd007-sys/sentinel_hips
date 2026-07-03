@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>HIPS - Login</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f0f0f0; }
+        .caja { width: 300px; margin: 100px auto; padding: 20px;
+                background: white; border: 1px solid #ccc; border-radius: 5px; }
+        h1 { font-size: 20px; text-align: center; }
+        input { width: 100%; padding: 8px; margin: 5px 0; box-sizing: border-box; }
+        button { width: 100%; padding: 10px; background: #2c3e50; color: white;
+                 border: none; cursor: pointer; }
+        .error { color: red; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="caja">
+        <h1>HIPS sentinel_hips</h1>
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+        <form method="post">
+            <input type="text" name="usuario" placeholder="Usuario" required>
+            <input type="password" name="password" placeholder="Contrasena" required>
+            <button type="submit">Entrar</button>
+        </form>
+    </div>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>HIPS - Configuracion</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { font-size: 22px; }
+        .menu { margin-bottom: 20px; }
+        .menu a { margin-right: 15px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; font-size: 14px; }
+        th { background: #2c3e50; color: white; }
+        tr:nth-child(even) { background: #f5f5f5; }
+        input { padding: 5px; }
+        button { padding: 5px 10px; background: #2c3e50; color: white;
+                 border: none; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Configuracion de Modulos</h1>
+    <div class="menu">
+        Usuario: <b>{{ usuario }}</b> |
+        <a href="/dashboard">Alarmas</a>
+        <a href="/config">Configuracion</a>
+        <a href="/logout">Salir</a>
+    </div>
+
+    <table>
+        <tr>
+            <th>Modulo</th>
+            <th>Parametro</th>
+            <th>Valor</th>
+            <th>Accion</th>
+        </tr>
+        {% for p in parametros %}
+        <tr>
+            <td>{{ p[1] }}</td>
+            <td>{{ p[2] }}</td>
+            <form method="post">
+                <td>
+                    <input type="hidden" name="id" value="{{ p[0] }}">
+                    <input type="text" name="valor" value="{{ p[3] }}">
+                </td>
+                <td><button type="submit">Guardar</button></td>
+            </form>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
