@@ -27,20 +27,28 @@ def leer_procesos():
     """
     Devuelve una lista de (pid, nombre, cpu, ram) usando 'ps'.
     cpu y ram son porcentajes (float).
+
+    Se ponen pid, cpu y mem PRIMERO y el nombre (comm) AL FINAL, porque
+    el nombre puede tener espacios y romperia el split si estuviera en
+    el medio. Asi, los 3 primeros campos son numeros y el resto es el nombre.
     """
     resultado = subprocess.run(
-        ["ps", "-eo", "pid,comm,%cpu,%mem", "--no-headers"],
+        ["ps", "-eo", "pid,%cpu,%mem,comm", "--no-headers"],
         capture_output=True, text=True,
     )
     procesos = []
     for linea in resultado.stdout.splitlines():
-        partes = linea.split()
+        partes = linea.split(None, 3)   # dividir en 4 partes como maximo
         if len(partes) < 4:
             continue
-        pid = partes[0]
-        nombre = partes[1]
-        cpu = float(partes[2])
-        ram = float(partes[3])
+        try:
+            pid = partes[0]
+            cpu = float(partes[1])
+            ram = float(partes[2])
+            nombre = partes[3]
+        except ValueError:
+            # Si alguna linea no tiene el formato esperado, se salta
+            continue
         procesos.append((pid, nombre, cpu, ram))
     return procesos
 
@@ -63,7 +71,6 @@ def main():
         for pid, nombre, cpu, ram in leer_procesos():
             if cpu >= umbral or ram >= umbral:
                 pids_altos.append(pid)
-                # Sumar una lectura sostenida a este pid
                 contador[pid] = contador.get(pid, 0) + 1
 
                 if contador[pid] >= sostenidas and pid not in ya_alarmados:
