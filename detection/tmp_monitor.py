@@ -9,9 +9,16 @@ clasico de malware que se deja en /tmp para correr.
 
 Cuando encuentra uno: alarma + eliminar el archivo + email.
 Corre en loop cada check_interval segundos.
+
+NOTA: se revisa el BIT de permiso de ejecucion directamente (con stat),
+no os.access(X_OK). Esto es importante porque /tmp esta montado con
+noexec (control de hardening), y os.access(X_OK) devuelve False en /tmp
+aunque el archivo tenga el bit de ejecucion puesto. El bit en los
+metadatos si se puede leer, y es lo que delata al archivo sospechoso.
 """
 
 import os
+import stat
 import time
 import sys
 
@@ -25,13 +32,27 @@ from config_loader import obtener_parametro
 CARPETA = "/tmp"
 
 
+def tiene_permiso_ejecucion(ruta):
+    """
+    Devuelve True si el archivo tiene el bit de ejecucion puesto
+    (para el dueno, el grupo o todos). Lee el bit directamente con
+    stat, asi funciona aunque /tmp este montado noexec.
+    """
+    try:
+        modo = os.stat(ruta).st_mode
+        # Bits de ejecucion: dueno (USR), grupo (GRP) y otros (OTH)
+        bits_ejecucion = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        return bool(modo & bits_ejecucion)
+    except OSError:
+        return False
+
+
 def buscar_ejecutables():
-    """Devuelve la lista de archivos en /tmp que tienen permiso de ejecucion."""
+    """Devuelve la lista de archivos en /tmp con el bit de ejecucion puesto."""
     sospechosos = []
     for nombre in os.listdir(CARPETA):
         ruta = os.path.join(CARPETA, nombre)
-        # Solo archivos (no carpetas) con permiso de ejecucion
-        if os.path.isfile(ruta) and os.access(ruta, os.X_OK):
+        if os.path.isfile(ruta) and tiene_permiso_ejecucion(ruta):
             sospechosos.append(ruta)
     return sospechosos
 

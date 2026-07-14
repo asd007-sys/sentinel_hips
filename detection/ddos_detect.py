@@ -41,7 +41,7 @@ def lanzar_tcpdump():
     try:
         f = open(RUTA_CAPTURA, "w")
         proceso = subprocess.Popen(
-            ["tcpdump", "-l", "-n", "-p", "port", "53"],
+            ["tcpdump", "-l", "-nn", "-p", "port", "53"],
             stdout=f, stderr=subprocess.DEVNULL,
         )
         print("tcpdump lanzado, capturando trafico DNS...")
@@ -53,13 +53,19 @@ def lanzar_tcpdump():
 
 def analizar_linea(linea):
     """
-    Si la linea es una query DNS (puerto 53, tipo ANY), devuelve la IP origen.
-    Sino, devuelve None.
-    Formato tcpdump: '11:00:14.627392 IP 1.2.3.4.38254 > 5.6.7.8.53: ... ANY? ...'
+    Si la linea es una query DNS hacia el servidor (puerto 53), devuelve
+    la IP de origen. Sino, devuelve None.
+
+    Acepta el puerto como ".53:" (numero) o ".domain:" (nombre), porque
+    tcpdump puede escribirlo de las dos formas segun la opcion -n/-nn.
+
+    Formato tcpdump: '11:00:14.627392 IP 1.2.3.4.38254 > 5.6.7.8.53: ...'
     """
-    if ".53:" not in linea or "ANY?" not in linea:
+    # Debe ser trafico hacia el puerto DNS (53 o "domain")
+    if ".53:" not in linea and ".domain:" not in linea:
         return None
-    m = re.match(r"^\d+:\d+:\d+\.\d+ IP (\d+\.\d+\.\d+\.\d+)\.\d+ >", linea)
+    # Sacar la IP de origen (la que esta antes del ">")
+    m = re.match(r"^\d+:\d+:\d+\.\d+ IP (\d+\.\d+\.\d+\.\d+)\.\S+ >", linea)
     if not m:
         return None
     return m.group(1)
